@@ -1,0 +1,86 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  IMAGE_NAME: hello-app
+
+jobs:
+  build:
+    # Skip until the repo is configured (Lab 9, Step 7), so the first push doesn't fail.
+    if: vars.ACR_NAME != ''
+    runs-on: ubuntu-latest
+    # No environment: token subject = <PREFIX>:ref:refs/heads/main
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        run: echo "image=${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to ACR (no registry password, uses the OIDC session)
+        run: az acr login -n "$ACR_NAME"
+
+      - name: Build and push image
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+        run: |
+          docker build --build-arg VERSION="${GITHUB_SHA::7}" -t "$IMAGE" app
+          docker push "$IMAGE"
+          echo "### Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # Environment: token subject = <PREFIX>:environment:production
+    environment: production
+    env:
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AKS_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+      NAMESPACE: oidc-app
+      IMAGE: ${{ needs.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install tools BEFORE logging in: the GitHub OIDC token is short-lived.
+      - name: Install kubectl + kubelogin
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          az aks install-cli --install-location "$HOME/.local/bin/kubectl" \
+            --kubelogin-install-location "$HOME/.local/bin/kubelogin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get kubeconfig (Cluster User role, no admin)
+        run: |
+          az aks get-credentials -g "$RG" -n "$AKS_NAME" --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+      - name: Deploy
+        run: |
+          sed "s|IMAGE_PLACEHOLDER|$IMAGE|" k8s/app.yaml | kubectl apply -n "$NAMESPACE" -f -
+          kubectl rollout status deployment/hello-app -n "$NAMESPACE" --timeout=180s
+          kubectl get deploy,pods,svc -n "$NAMESPACE" -o wide
+          echo "### Deployed \`$IMAGE\` to namespace \`$NAMESPACE\`" >> "$GITHUB_STEP_SUMMARY"

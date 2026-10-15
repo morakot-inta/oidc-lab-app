@@ -1,0 +1,47 @@
+# IMAGE_PLACEHOLDER is replaced by the deploy job with the image it just built.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-app
+  labels:
+    app: hello-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello-app
+  template:
+    metadata:
+      labels:
+        app: hello-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: hello-app
+          image: IMAGE_PLACEHOLDER
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-app
+spec:
+  type: ClusterIP
+  selector:
+    app: hello-app
+  ports:
+    - port: 80
+      targetPort: 8080
