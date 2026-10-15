@@ -51,7 +51,7 @@ jobs:
     env:
       RG: ${{ vars.AZURE_RESOURCE_GROUP }}
       AKS_NAME: ${{ vars.AKS_CLUSTER_NAME }}
-      NAMESPACE: oidc-app
+      NAMESPACE: default
       IMAGE: ${{ needs.build.outputs.image }}
     steps:
       - uses: actions/checkout@v4
